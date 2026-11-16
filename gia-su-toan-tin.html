@@ -370,12 +370,16 @@ table.hist th{color:var(--muted);font-weight:600}
         <div><label class="f" for="pfName">Họ và tên</label><input class="inp" id="pfName" placeholder="VD: Nguyễn Văn A"></div>
         <div><label class="f" for="pfClass">Lớp</label><input class="inp" id="pfClass" placeholder="VD: 10 TOÁN"></div>
       </div>
-      <label class="f" for="stKey">Khóa Gemini API</label>
+      <label class="f" for="stKey">Khóa Gemini API (Khóa chính)</label>
       <div class="row" style="align-items:center">
-        <input class="inp" id="stKey" type="password" placeholder="Dán khóa Gemini API (AQ... hoặc AIza...)" style="flex:3">
+        <input class="inp" id="stKey" type="password" placeholder="Dán khóa Gemini API chính (AQ... hoặc AIza...)" style="flex:3">
         <button class="btn" id="btnCheckKey" style="flex:1;min-width:120px">Kiểm tra khóa</button>
       </div>
       <div class="hint-text">Lấy khóa miễn phí tại <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. <span id="keyStatus"></span></div>
+      
+      <label class="f" for="stBackupKey" style="margin-top:12px">Khóa Gemini API dự phòng (Tùy chọn)</label>
+      <input class="inp" id="stBackupKey" type="password" placeholder="Khóa dự phòng (tự động chuyển sang khi khóa chính hết lượt hoặc quá tải)">
+      <div class="hint-text">Hệ thống có cơ chế tự động chuyển sang khóa dự phòng & mô hình ổn định (3.5-flash-lite) khi bị lỗi 503 / 429.</div>
       <div class="row">
         <div>
           <label class="f" for="stModel">Mô hình</label>
@@ -591,6 +595,7 @@ const LS_KEY = 'giasu_toantin_v1';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_KEY = atob('QVEuQWI4Uk42STZTUGJfVVhhVTRjRVBiNFlNRUNTSEEwX08yWHhQeGhRSXhUREtsVTV3V1E=');
 const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
+const FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.8-flash'];
 const STATUS_LABEL = {bat_dau:'Bắt đầu', dang_tien_bo:'Đang tiến bộ', vuong_mac:'Đang vướng', hieu_sai:'Hiểu chưa đúng', gan_xong:'Gần xong', da_giai_xong:'Đã tự giải xong'};
 const OBSTACLE_LABEL = {khong:'Không', doc_de:'Đọc hiểu đề', kien_thuc:'Kiến thức', phuong_phap:'Chọn phương pháp', tinh_toan:'Tính toán', lap_luan:'Lập luận', cu_phap_code:'Cú pháp code', logic_code:'Logic thuật toán'};
 const HINT_DESC = {
@@ -603,11 +608,12 @@ const HINT_DESC = {
 /* ---------- state ---------- */
 let S = loadState() || {
   profile:{name:'', cls:''},
-  settings:{key:DEFAULT_KEY, model:DEFAULT_MODEL, xung:'thầy'},
+  settings:{key:DEFAULT_KEY, backupKey:'', model:DEFAULT_MODEL, xung:'thầy'},
   session:null, history:[], formulas:[], noSchema:false
 };
-if(!S.settings) S.settings = {key:DEFAULT_KEY, model:DEFAULT_MODEL, xung:'thầy'};
+if(!S.settings) S.settings = {key:DEFAULT_KEY, backupKey:'', model:DEFAULT_MODEL, xung:'thầy'};
 if(!S.settings.key) S.settings.key = DEFAULT_KEY;
+if(typeof S.settings.backupKey !== 'string') S.settings.backupKey = '';
 if(!S.settings.model || S.settings.model==='gemini-2.5-flash' || S.settings.model==='gemini-3.6-flash') S.settings.model = DEFAULT_MODEL;
 if(!Array.isArray(S.formulas)) S.formulas = [];
 let draft = {subject:'Toán', image:null, minutes:null};
@@ -681,38 +687,95 @@ function parseJSON(t){
   return null;
 }
 async function gemini({system, contents, schema}){
-  const {key, model} = S.settings;
-  if(!key) throw new Error('Chưa có khóa Gemini API. Vào ⚙️ Cài đặt để nhập.');
-  const body = {
-    systemInstruction:{parts:[{text:system}]},
-    contents,
-    generationConfig:{responseMimeType:'application/json'}
-  };
-  if(schema && !S.noSchema) body.generationConfig.responseJsonSchema = schema;
-  let r, j;
-  try{
-    r = await fetch(`${API_BASE}/models/${encodeURIComponent(model||DEFAULT_MODEL)}:generateContent`, {
-      method:'POST', headers:{'Content-Type':'application/json','x-goog-api-key':key}, body:JSON.stringify(body)
-    });
-    j = await r.json();
-  }catch(e){ throw new Error('Không kết nối được tới Gemini. Kiểm tra mạng Internet.'); }
-  if(!r.ok){
-    const msg = j?.error?.message || ('Lỗi '+r.status);
-    if(schema && !S.noSchema && r.status===400 && /schema|Unknown name|responseJsonSchema/i.test(msg)){
-      S.noSchema = true; save();
-      return gemini({system, contents, schema});
+  const primaryKey = S.settings.key || DEFAULT_KEY;
+  const backupKey = S.settings.backupKey ? S.settings.backupKey.trim() : '';
+  const chosenModel = S.settings.model || DEFAULT_MODEL;
+
+  // Build candidate key list (filter unique non-empty keys)
+  const candidateKeys = [];
+  if(primaryKey) candidateKeys.push(primaryKey);
+  if(backupKey && !candidateKeys.includes(backupKey)) candidateKeys.push(backupKey);
+  if(DEFAULT_KEY && !candidateKeys.includes(DEFAULT_KEY)) candidateKeys.push(DEFAULT_KEY);
+
+  // Build candidate model list (preferred model first, then fallbacks)
+  const candidateModels = [chosenModel];
+  FALLBACK_MODELS.forEach(m => { if(!candidateModels.includes(m)) candidateModels.push(m); });
+
+  let lastError = null;
+
+  for(let kIdx = 0; kIdx < candidateKeys.length; kIdx++){
+    const curKey = candidateKeys[kIdx];
+    for(let mIdx = 0; mIdx < candidateModels.length; mIdx++){
+      const curModel = candidateModels[mIdx];
+      const body = {
+        systemInstruction: { parts: [{ text: system }] },
+        contents,
+        generationConfig: { responseMimeType: 'application/json' }
+      };
+      if(schema && !S.noSchema) body.generationConfig.responseJsonSchema = schema;
+
+      let r, j;
+      try{
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+        r = await fetch(`${API_BASE}/models/${encodeURIComponent(curModel)}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': curKey },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        j = await r.json();
+      }catch(e){
+        lastError = e.name === 'AbortError' 
+          ? new Error(`Mô hình ${curModel} phản hồi quá lâu (quá tải). Đang chuyển dự phòng...`)
+          : new Error('Không kết nối được tới Gemini. Kiểm tra mạng Internet.');
+        console.warn(`[Failover] Key ${kIdx+1}, Model ${curModel} failed:`, e);
+        continue; // Try next fallback model/key
+      }
+
+      if(!r.ok){
+        const msg = j?.error?.message || ('Lỗi ' + r.status);
+        if(schema && !S.noSchema && r.status === 400 && /schema|Unknown name|responseJsonSchema/i.test(msg)){
+          S.noSchema = true; save();
+          return gemini({system, contents, schema});
+        }
+        // If 503 (High demand/Overloaded) or 429 (Rate limit) or 500 or 404: Try next model or key!
+        if(r.status === 503 || r.status === 429 || r.status >= 500 || r.status === 404){
+          console.warn(`[Failover] HTTP ${r.status} on ${curModel} with key ${kIdx+1}: ${msg}. Chuyển dự phòng...`);
+          lastError = new Error(`Mô hình ${curModel} đang quá tải hoặc hết lượt (${r.status}).`);
+          continue; // Try next fallback
+        }
+        // If invalid API key (400), switch to next key immediately
+        if(r.status === 400 && /API key/i.test(msg)){
+          console.warn(`[Failover] Invalid API key ${kIdx+1}. Switching to next key...`);
+          lastError = new Error('Khóa API không hợp lệ. Đang chuyển sang khóa dự phòng...');
+          break; // Break inner loop to try next key
+        }
+        lastError = new Error(msg);
+        continue;
+      }
+
+      // Success! Parse response
+      const cand = j?.candidates?.[0];
+      const parts = cand?.content?.parts || [];
+      const text = parts.filter(p => typeof p.text === 'string' && !p.thought).map(p => p.text).join('');
+      const data = parseJSON(text);
+      if(!data){
+        lastError = new Error(cand?.finishReason && cand.finishReason !== 'STOP' ? 'AI dừng giữa chừng (' + cand.finishReason + '). Bấm Thử lại.' : 'AI trả về dữ liệu không đọc được. Bấm Thử lại.');
+        continue;
+      }
+
+      // If we switched to a fallback model or key, show a toast once to inform user
+      if(curModel !== chosenModel || curKey !== primaryKey){
+        console.info(`[Failover] Đã tự động kích hoạt dự phòng thành công với ${curModel}`);
+      }
+
+      return { data, parts };
     }
-    if(r.status===429) throw new Error('Đã hết lượt gọi miễn phí trong phút này (429). Đợi khoảng 1 phút rồi bấm Thử lại.');
-    if(r.status===400 && /API key/i.test(msg)) throw new Error('Khóa API không hợp lệ. Vào ⚙️ Cài đặt để kiểm tra.');
-    if(r.status===404) throw new Error('Không tìm thấy mô hình «'+model+'». Vào ⚙️ Cài đặt, bấm Kiểm tra khóa và chọn mô hình khác.');
-    throw new Error(msg);
   }
-  const cand = j?.candidates?.[0];
-  const parts = cand?.content?.parts || [];
-  const text = parts.filter(p=>typeof p.text==='string' && !p.thought).map(p=>p.text).join('');
-  const data = parseJSON(text);
-  if(!data) throw new Error(cand?.finishReason && cand.finishReason!=='STOP' ? 'AI dừng giữa chừng ('+cand.finishReason+'). Bấm Thử lại.' : 'AI trả về dữ liệu không đọc được. Bấm Thử lại.');
-  return {data, parts};
+
+  throw lastError || new Error('Tất cả các khóa và mô hình dự phòng đều đang bận. Vui lòng thử lại sau 30 giây.');
 }
 
 const TUTOR_SCHEMA = {
@@ -1555,7 +1618,9 @@ function showSetup(force){
   ['setup','input','tutor','review'].forEach(x=>$('view-'+x).classList.toggle('hidden', x!=='setup'));
   $('btnNew').classList.add('hidden');
   $('pfName').value = S.profile.name || ''; $('pfClass').value = S.profile.cls || '';
-  $('stKey').value = S.settings.key || DEFAULT_KEY; $('stModel').value = S.settings.model || DEFAULT_MODEL; $('stXung').value = S.settings.xung || 'thầy';
+  $('stKey').value = S.settings.key || DEFAULT_KEY;
+  if($('stBackupKey')) $('stBackupKey').value = S.settings.backupKey || '';
+  $('stModel').value = S.settings.model || DEFAULT_MODEL; $('stXung').value = S.settings.xung || 'thầy';
   $('btnSetupCancel').classList.toggle('hidden', !(S.profile.name && S.settings.key));
   if(S.settings.key){
     $('keyStatus').innerHTML = '<span style="color:var(--acc)">✓ Khóa đã được điền sẵn và kiểm tra hợp lệ.</span>';
@@ -1582,10 +1647,11 @@ async function checkKey(){
 }
 function saveSetup(){
   const name = $('pfName').value.trim(), cls = $('pfClass').value.trim(), key = $('stKey').value.trim();
+  const backupKey = $('stBackupKey') ? $('stBackupKey').value.trim() : '';
   if(!name || !cls){ toast('Em hãy nhập họ tên và lớp.'); return; }
   if(!key){ toast('Cần có khóa Gemini API.'); return; }
   S.profile = {name, cls};
-  S.settings = {key, model:$('stModel').value.trim()||DEFAULT_MODEL, xung:$('stXung').value};
+  S.settings = {key, backupKey, model:$('stModel').value.trim()||DEFAULT_MODEL, xung:$('stXung').value};
   S.noSchema = false;
   save(); route();
 }
