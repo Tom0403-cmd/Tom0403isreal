@@ -594,6 +594,8 @@ table.hist th{color:var(--muted);font-weight:600}
 const LS_KEY = 'giasu_toantin_v1';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_KEY = atob('QVEuQWI4Uk42STZTUGJfVVhhVTRjRVBiNFlNRUNTSEEwX08yWHhQeGhRSXhUREtsVTV3V1E=');
+const DEFAULT_BACKUP_KEY = atob('QVEuQWI4Uk42TEtzSHN4TEV3V1gtSFluek80djdYajBBZmpnN0VYQVlSa2FuY3JsUV9fUnc=');
+const DEFAULT_KEY_3 = atob('QVEuQWI4Uk42S3lQdjVWQjdsNU1LNnVqU1NmNTMyMUI0MW1oMkIwbG82V0VONGZJbGxRQXc=');
 const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 const FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.8-flash'];
 const STATUS_LABEL = {bat_dau:'Bắt đầu', dang_tien_bo:'Đang tiến bộ', vuong_mac:'Đang vướng', hieu_sai:'Hiểu chưa đúng', gan_xong:'Gần xong', da_giai_xong:'Đã tự giải xong'};
@@ -608,12 +610,12 @@ const HINT_DESC = {
 /* ---------- state ---------- */
 let S = loadState() || {
   profile:{name:'', cls:''},
-  settings:{key:DEFAULT_KEY, backupKey:'', model:DEFAULT_MODEL, xung:'thầy'},
+  settings:{key:DEFAULT_KEY, backupKey:DEFAULT_BACKUP_KEY, model:DEFAULT_MODEL, xung:'thầy'},
   session:null, history:[], formulas:[], noSchema:false
 };
-if(!S.settings) S.settings = {key:DEFAULT_KEY, backupKey:'', model:DEFAULT_MODEL, xung:'thầy'};
+if(!S.settings) S.settings = {key:DEFAULT_KEY, backupKey:DEFAULT_BACKUP_KEY, model:DEFAULT_MODEL, xung:'thầy'};
 if(!S.settings.key) S.settings.key = DEFAULT_KEY;
-if(typeof S.settings.backupKey !== 'string') S.settings.backupKey = '';
+if(!S.settings.backupKey) S.settings.backupKey = DEFAULT_BACKUP_KEY;
 if(!S.settings.model || S.settings.model==='gemini-2.5-flash' || S.settings.model==='gemini-3.6-flash') S.settings.model = DEFAULT_MODEL;
 if(!Array.isArray(S.formulas)) S.formulas = [];
 let draft = {subject:'Toán', image:null, minutes:null};
@@ -688,7 +690,7 @@ function parseJSON(t){
 }
 async function gemini({system, contents, schema}){
   const primaryKey = S.settings.key || DEFAULT_KEY;
-  const backupKey = S.settings.backupKey ? S.settings.backupKey.trim() : '';
+  const backupKey = S.settings.backupKey ? S.settings.backupKey.trim() : DEFAULT_BACKUP_KEY;
   const chosenModel = S.settings.model || DEFAULT_MODEL;
 
   // Build candidate key list (filter unique non-empty keys)
@@ -696,6 +698,8 @@ async function gemini({system, contents, schema}){
   if(primaryKey) candidateKeys.push(primaryKey);
   if(backupKey && !candidateKeys.includes(backupKey)) candidateKeys.push(backupKey);
   if(DEFAULT_KEY && !candidateKeys.includes(DEFAULT_KEY)) candidateKeys.push(DEFAULT_KEY);
+  if(DEFAULT_BACKUP_KEY && !candidateKeys.includes(DEFAULT_BACKUP_KEY)) candidateKeys.push(DEFAULT_BACKUP_KEY);
+  if(DEFAULT_KEY_3 && !candidateKeys.includes(DEFAULT_KEY_3)) candidateKeys.push(DEFAULT_KEY_3);
 
   // Build candidate model list (preferred model first, then fallbacks)
   const candidateModels = [chosenModel];
@@ -1619,7 +1623,7 @@ function showSetup(force){
   $('btnNew').classList.add('hidden');
   $('pfName').value = S.profile.name || ''; $('pfClass').value = S.profile.cls || '';
   $('stKey').value = S.settings.key || DEFAULT_KEY;
-  if($('stBackupKey')) $('stBackupKey').value = S.settings.backupKey || '';
+  if($('stBackupKey')) $('stBackupKey').value = S.settings.backupKey || DEFAULT_BACKUP_KEY;
   $('stModel').value = S.settings.model || DEFAULT_MODEL; $('stXung').value = S.settings.xung || 'thầy';
   $('btnSetupCancel').classList.toggle('hidden', !(S.profile.name && S.settings.key));
   if(S.settings.key){
